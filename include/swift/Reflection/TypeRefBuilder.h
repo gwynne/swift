@@ -513,6 +513,23 @@ public:
     return SILBoxTypeRef::create(*this, base);
   }
 
+  using BuiltSILBoxField = typename SILBoxTypeWithLayoutTypeRef::Field;
+  using BuiltSubstitution = std::pair<const TypeRef *, const TypeRef *>;
+  using BuiltRequirement = TypeRefRequirement;
+  using BuiltLayoutConstraint = TypeRefLayoutConstraint;
+  const SILBoxTypeWithLayoutTypeRef *createSILBoxTypeWithLayout(
+      const std::vector<BuiltSILBoxField> &Fields,
+      const std::vector<BuiltSubstitution> &Substitutions,
+      const std::vector<BuiltRequirement> &Requirements) {
+    return SILBoxTypeWithLayoutTypeRef::create(*this, Fields, Substitutions,
+                                               Requirements);
+  }
+
+  bool isExistential(const TypeRef *) {
+    // FIXME: Implement this.
+    return true;
+  }
+
   const TypeRef *createDynamicSelfType(const TypeRef *selfType) {
     // TypeRefs should not contain DynamicSelfType.
     return nullptr;

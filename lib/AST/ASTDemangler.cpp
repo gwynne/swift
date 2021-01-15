@@ -27,6 +27,7 @@
 #include "swift/AST/GenericSignature.h"
 #include "swift/AST/Module.h"
 #include "swift/AST/NameLookup.h"
+#include "swift/AST/SILLayout.h"
 #include "swift/AST/Type.h"
 #include "swift/AST/TypeCheckRequests.h"
 #include "swift/AST/Types.h"
@@ -660,6 +661,45 @@ Type ASTBuilder::create##Name##StorageType(Type base) { \
 
 Type ASTBuilder::createSILBoxType(Type base) {
   return SILBoxType::get(base->getCanonicalType());
+}
+
+Type ASTBuilder::createSILBoxTypeWithLayout(
+    const std::vector<BuiltSILBoxField> &fields,
+    const std::vector<BuiltSubstitution> &Substitutions,
+    const std::vector<BuiltRequirement> &Requirements) {
+  SmallVector<Type, 4> replacements;
+  SmallVector<GenericTypeParamType *, 4> genericTypeParams;
+  for (const auto &s : Substitutions) {
+    if (auto *t = dyn_cast_or_null<GenericTypeParamType>(s.first.getPointer()))
+      genericTypeParams.push_back(t);
+    replacements.push_back(s.second);
+  }
+
+  GenericSignature signature;
+  if (!genericTypeParams.empty())
+    signature = GenericSignature::get(genericTypeParams, Requirements);
+  SmallVector<SILField, 4> silFields;
+  for (auto field: fields)
+    silFields.emplace_back(field.getPointer()->getCanonicalType(),
+                           field.getInt());
+  SILLayout *layout =
+      SILLayout::get(Ctx, signature.getCanonicalSignature(), silFields);
+  SmallVector<ProtocolConformanceRef, 4> conformanceRefs;
+  llvm::SmallDenseMap<Type, ProtocolConformanceRef, 4> conformance;
+  for (const auto &r : Requirements)
+    if (r.getKind() == RequirementKind::Conformance)
+      if (auto *proto =
+              llvm::dyn_cast<ProtocolDecl>(r.getSecondType()->getAnyNominal()))
+        conformance.insert({r.getFirstType(), ProtocolConformanceRef(proto)});
+
+  for (const auto &param : genericTypeParams)
+    if (const auto proto = conformance.lookup(param))
+      conformanceRefs.push_back(proto);
+  SubstitutionMap substs;
+  if (!genericTypeParams.empty())
+    substs = SubstitutionMap::get(signature, ArrayRef<Type>(replacements),
+                                  conformanceRefs);
+  return SILBoxType::get(Ctx, layout, substs);
 }
 
 Type ASTBuilder::createObjCClassType(StringRef name) {

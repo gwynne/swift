@@ -126,6 +126,19 @@ public:
 #include "swift/AST/ReferenceStorage.def"
 
   Type createSILBoxType(Type base);
+  using BuiltSILBoxField = llvm::PointerIntPair<Type, 1>;
+  using BuiltSubstitution = std::pair<Type, Type>;
+  using BuiltRequirement = swift::Requirement;
+  using BuiltLayoutConstraint = swift::LayoutConstraint;
+  Type createSILBoxTypeWithLayout(
+      const std::vector<BuiltSILBoxField> &Fields,
+      const std::vector<BuiltSubstitution> &Substitutions,
+      const std::vector<BuiltRequirement> &Requirements);
+
+  bool isExistential(Type type) {
+    return type->isExistentialType();
+  }
+
 
   Type createObjCClassType(StringRef name);
 

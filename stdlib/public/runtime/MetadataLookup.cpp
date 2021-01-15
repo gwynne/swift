@@ -1463,7 +1463,7 @@ public:
     return BuiltType();
   }
 
-  TypeLookupErrorOr<BuiltType>
+  BuiltType
   createGenericTypeParameterType(unsigned depth, unsigned index) const {
     // Use the callback, when provided.
     if (substGenericParameter)
@@ -1560,6 +1560,58 @@ public:
   TypeLookupErrorOr<BuiltType> createSILBoxType(BuiltType base) const {
     // FIXME: Implement.
     return BuiltType();
+  }
+
+  using BuiltSILBoxField = llvm::PointerIntPair<BuiltType, 1>;
+  using BuiltSubstitution = std::pair<BuiltType, BuiltType>;
+  struct BuiltLayoutConstraint {
+    bool operator==(BuiltLayoutConstraint rhs) const { return true; }
+    operator bool() const { return true; }
+  };
+  using BuiltLayoutConstraint = BuiltLayoutConstraint;
+#if LLVM_PTR_SIZE == 4
+  /// Unfortunately the alignment of TypeRef is too large to squeeze in 3 extra
+  /// bits on (some?) 32-bit systems.
+  class BigBuiltTypeIntPair {
+    BuiltType Ptr;
+    RequirementKind Int;
+  public:
+    BigBuiltTypeIntPair(BuiltType ptr, RequirementKind i) : Ptr(ptr), Int(i) {}
+    RequirementKind getInt() const { return Int; }
+    BuiltType getPointer() const { return Ptr; }
+    uint64_t getOpaqueValue() const {
+      return (uint64_t)Ptr | ((uint64_t)Int << 32);
+    }
+  };
+#endif
+
+  struct Requirement : public RequirementBase<BuiltType,
+#if LLVM_PTR_SIZE == 4
+         BigBuiltTypeIntPair,
+#else
+         llvm::PointerIntPair<BuiltType, 3, RequirementKind>,
+
+#endif
+         BuiltLayoutConstraint> {
+    Requirement(RequirementKind kind, BuiltType first, BuiltType second)
+        : RequirementBase(kind, first, second) {}
+    Requirement(RequirementKind kind, BuiltType first,
+                BuiltLayoutConstraint second)
+        : RequirementBase(kind, first, second) {}
+  };
+  using BuiltRequirement = Requirement;
+
+  TypeLookupErrorOr<BuiltType> createSILBoxTypeWithLayout(
+      const std::vector<BuiltSILBoxField> &Fields,
+      const std::vector<BuiltSubstitution> &Substitutions,
+      const std::vector<BuiltRequirement> &Requirements) const {
+    // FIXME: Implement.
+    return BuiltType();
+  }
+
+  bool isExistential(BuiltType) {
+    // FIXME: Implement.
+    return true;
   }
 
   TypeReferenceOwnership getReferenceOwnership() const {
