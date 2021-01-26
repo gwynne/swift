@@ -522,6 +522,9 @@ public:
   /// Get Sequence.makeIterator().
   FuncDecl *getSequenceMakeIterator() const;
 
+  /// Get AsyncSequence.makeAsyncIterator().
+  FuncDecl *getAsyncSequenceMakeAsyncIterator() const;
+
   /// Check whether the standard library provides all the correct
   /// intrinsic support for Optional<T>.
   ///
@@ -629,8 +632,15 @@ public:
     ArrayRef<SILParameterInfo> params, Optional<SILResultInfo> result,
     SILFunctionType::Representation trueRep);
 
-  /// Instantiates "Impl.Converter" if needed, then calls
-  /// ClangTypeConverter::getClangTemplateArguments.
+  /// Instantiates "Impl.Converter" if needed, then translate Swift generic
+  /// substitutions to equivalent C++ types using \p templateParams and \p
+  /// genericArgs. The converted Clang types are placed into \p templateArgs.
+  ///
+  /// \p templateArgs must be empty. \p templateParams and \p genericArgs must
+  /// be equal in size.
+  ///
+  /// \returns nullptr if successful. If an error occors, returns a list of
+  /// types that couldn't be converted.
   std::unique_ptr<TemplateInstantiationError> getClangTemplateArguments(
       const clang::TemplateParameterList *templateParams,
       ArrayRef<Type> genericArgs,
@@ -795,7 +805,8 @@ public:
       StringRef moduleName,
       bool isUnderlyingClangModule,
       ModuleDependenciesCache &cache,
-      InterfaceSubContextDelegate &delegate);
+      InterfaceSubContextDelegate &delegate,
+      bool cacheOnly = false);
 
   /// Retrieve the module dependencies for the Swift module with the given name.
   Optional<ModuleDependencies> getSwiftModuleDependencies(

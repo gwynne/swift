@@ -163,7 +163,7 @@ static bool diagnoseNoReturn(ADContext &context, SILFunction *original,
 static bool diagnoseUnsupportedControlFlow(ADContext &context,
                                            SILFunction *original,
                                            DifferentiationInvoker invoker) {
-  if (original->getBlocks().size() <= 1)
+  if (original->size() <= 1)
     return false;
   // Diagnose unsupported branching terminators.
   for (auto &bb : *original) {
@@ -926,7 +926,7 @@ bool DifferentiationTransformer::canonicalizeDifferentiabilityWitness(
         !witness->getVJP()) {
       // JVP and differential generation do not currently support functions with
       // multiple basic blocks.
-      if (witness->getOriginalFunction()->getBlocks().size() > 1) {
+      if (witness->getOriginalFunction()->size() > 1) {
         context.emitNondifferentiabilityError(
             witness->getOriginalFunction()->getLocation().getSourceLoc(),
             invoker, diag::autodiff_jvp_control_flow_not_supported);
@@ -1292,7 +1292,7 @@ void DifferentiationTransformer::foldDifferentiableFunctionExtraction(
 bool DifferentiationTransformer::processDifferentiableFunctionInst(
     DifferentiableFunctionInst *dfi) {
   PrettyStackTraceSILNode dfiTrace("canonicalizing `differentiable_function`",
-                                   cast<SILInstruction>(dfi));
+                                   dfi);
   PrettyStackTraceSILFunction fnTrace("...in", dfi->getFunction());
   LLVM_DEBUG({
     auto &s = getADDebugStream() << "Processing DifferentiableFunctionInst:\n";
@@ -1332,8 +1332,7 @@ bool DifferentiationTransformer::processDifferentiableFunctionInst(
 
 bool DifferentiationTransformer::processLinearFunctionInst(
     LinearFunctionInst *lfi) {
-  PrettyStackTraceSILNode dfiTrace("canonicalizing `linear_function`",
-                                   cast<SILInstruction>(lfi));
+  PrettyStackTraceSILNode dfiTrace("canonicalizing `linear_function`", lfi);
   PrettyStackTraceSILFunction fnTrace("...in", lfi->getFunction());
   LLVM_DEBUG({
     auto &s = getADDebugStream() << "Processing LinearFunctionInst:\n";

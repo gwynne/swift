@@ -696,6 +696,165 @@ ExistentialTypeSupportedRequest::evaluate(Evaluator &evaluator,
   return true;
 }
 
+static bool hasThrowingFunctionClosureParameter(CanType type) {
+  // Only consider throwing function types.
+  if (auto fnType = dyn_cast<AnyFunctionType>(type)) {
+    return fnType->getExtInfo().isThrowing();
+  }
+
+  // Look through tuples.
+  if (auto tuple = dyn_cast<TupleType>(type)) {
+    for (auto eltType : tuple.getElementTypes()) {
+      auto elt = eltType->lookThroughAllOptionalTypes()->getCanonicalType();
+      if (hasThrowingFunctionClosureParameter(elt))
+        return true;
+    }
+    return false;
+  }
+
+  // Suppress diagnostics in the presence of errors.
+  if (type->hasError()) {
+    return true;
+  }
+
+  return false;
+}
+
+static FunctionRethrowingKind
+getTypeThrowingKind(Type interfaceTy, GenericSignature genericSig) {
+  if (interfaceTy->isTypeParameter()) {
+    for (auto proto : genericSig->getRequiredProtocols(interfaceTy)) {
+      if (proto->isRethrowingProtocol()) {
+        return FunctionRethrowingKind::ByConformance;
+      }
+    }
+  } else if (auto NTD = interfaceTy->getNominalOrBoundGenericNominal()) {
+    if (auto genericSig = NTD->getGenericSignature()) {
+      for (auto req : genericSig->getRequirements()) {
+        if (req.getKind() == RequirementKind::Conformance) {
+          if (req.getSecondType()->castTo<ProtocolType>()
+                                 ->getDecl()
+                                 ->isRethrowingProtocol()) {
+            return FunctionRethrowingKind::ByConformance;
+          }
+        }
+      }
+    }
+  }
+  return FunctionRethrowingKind::Invalid;
+}
+
+static FunctionRethrowingKind 
+getParameterThrowingKind(AbstractFunctionDecl *decl, 
+                         GenericSignature genericSig) {
+  FunctionRethrowingKind kind = FunctionRethrowingKind::Invalid;
+  // check all parameters to determine if any are closures that throw
+  bool foundThrowingClosure = false;
+  for (auto param : *decl->getParameters()) {
+    auto interfaceTy = param->getInterfaceType();
+    if (hasThrowingFunctionClosureParameter(interfaceTy
+          ->lookThroughAllOptionalTypes()
+          ->getCanonicalType())) {
+      foundThrowingClosure = true;
+    }
+
+    if (kind == FunctionRethrowingKind::Invalid) {
+      kind = getTypeThrowingKind(interfaceTy, genericSig);
+    }
+  }
+  if (kind == FunctionRethrowingKind::Invalid &&
+      foundThrowingClosure) {
+    return FunctionRethrowingKind::ByClosure;
+  }
+  return kind;
+}
+
+ProtocolRethrowsRequirementList
+ProtocolRethrowsRequirementsRequest::evaluate(Evaluator &evaluator,
+                                              ProtocolDecl *decl) const {
+  SmallVector<std::pair<Type, ValueDecl*>, 2> found;
+  llvm::DenseSet<ProtocolDecl*> checkedProtocols;
+
+  ASTContext &ctx = decl->getASTContext();
+
+  // only allow rethrowing requirements to be determined from marked protocols
+  if (!decl->getAttrs().hasAttribute<swift::AtRethrowsAttr>()) {
+    return ProtocolRethrowsRequirementList(ctx.AllocateCopy(found));
+  }
+
+  // check if immediate members of protocol are 'rethrows'
+  for (auto member : decl->getMembers()) {
+    auto fnDecl = dyn_cast<AbstractFunctionDecl>(member);
+    // it must be a function
+    // it must have a rethrows attribute
+    // it must not have any parameters that are closures that cause rethrowing
+    if (!fnDecl || 
+        !fnDecl->hasThrows()) {
+      continue;
+    }
+
+    GenericSignature genericSig = fnDecl->getGenericSignature();
+    auto kind = getParameterThrowingKind(fnDecl, genericSig);
+    // skip closure based rethrowing cases
+    if (kind == FunctionRethrowingKind::ByClosure) {
+      continue;
+    }
+    // we now have a protocol member that has a rethrows and no closure 
+    // parameters contributing to it's rethrowing-ness
+    found.push_back(
+      std::pair<Type, ValueDecl*>(decl->getSelfInterfaceType(), fnDecl));
+  }
+  checkedProtocols.insert(decl);
+
+  // check associated conformances of associated types or inheritance
+  for (auto requirement : decl->getRequirementSignature()) {
+    if (requirement.getKind() != RequirementKind::Conformance) {
+      continue;
+    }
+    auto protoTy = requirement.getSecondType()->castTo<ProtocolType>();
+    auto proto = protoTy->getDecl();
+    if (checkedProtocols.count(proto) != 0) {
+      continue;
+    }
+    checkedProtocols.insert(proto);
+    for (auto entry : proto->getRethrowingRequirements()) {
+      found.emplace_back(requirement.getFirstType(), entry.second);
+    }
+  }
+  
+  return ProtocolRethrowsRequirementList(ctx.AllocateCopy(found));
+}
+
+FunctionRethrowingKind
+FunctionRethrowingKindRequest::evaluate(Evaluator &evaluator,
+                                        AbstractFunctionDecl *decl) const {
+  if (decl->hasThrows()) {
+    auto proto = dyn_cast<ProtocolDecl>(decl->getDeclContext());
+    bool fromRethrow = proto != nullptr ? proto->isRethrowingProtocol() : false;
+    bool markedRethrows = decl->getAttrs().hasAttribute<RethrowsAttr>();
+    if (fromRethrow && !markedRethrows) {
+      return FunctionRethrowingKind::ByConformance;
+    }
+    if (markedRethrows) {
+      GenericSignature genericSig = decl->getGenericSignature();
+      FunctionRethrowingKind kind = getParameterThrowingKind(decl, genericSig);
+      // since we have checked all arguments, if we still havent found anything
+      // check the self parameter
+      if (kind == FunctionRethrowingKind::Invalid && 
+          decl->hasImplicitSelfDecl()) {
+        auto selfParam = decl->getImplicitSelfDecl();
+        if (selfParam) {
+          auto interfaceTy = selfParam->getInterfaceType();
+          kind = getTypeThrowingKind(interfaceTy, genericSig);
+        }
+      }
+      return kind;
+    }
+    return FunctionRethrowingKind::Throws;
+  }
+  return FunctionRethrowingKind::None;
+}
+
 bool
 IsFinalRequest::evaluate(Evaluator &evaluator, ValueDecl *decl) const {
   if (isa<ClassDecl>(decl))
@@ -2511,18 +2670,18 @@ NamingPatternRequest::evaluate(Evaluator &evaluator, VarDecl *VD) const {
 namespace {
 
 // Utility class for deterministically ordering vtable entries for
-// synthesized methods.
-struct SortedFuncList {
+// synthesized declarations.
+struct SortedDeclList {
   using Key = std::tuple<DeclName, std::string>;
-  using Entry = std::pair<Key, AbstractFunctionDecl *>;
+  using Entry = std::pair<Key, ValueDecl *>;
   SmallVector<Entry, 2> elts;
   bool sorted = false;
 
-  void add(AbstractFunctionDecl *afd) {
-    assert(!isa<AccessorDecl>(afd));
+  void add(ValueDecl *vd) {
+    assert(!isa<AccessorDecl>(vd));
 
-    Key key{afd->getName(), afd->getInterfaceType().getString()};
-    elts.emplace_back(key, afd);
+    Key key{vd->getName(), vd->getInterfaceType()->getCanonicalType().getString()};
+    elts.emplace_back(key, vd);
   }
 
   bool empty() { return elts.empty(); }
@@ -2550,66 +2709,103 @@ struct SortedFuncList {
 
 } // end namespace
 
-ArrayRef<Decl *>
-SemanticMembersRequest::evaluate(Evaluator &evaluator,
-                                IterableDeclContext *idc) const {
+namespace {
+  enum class MembersRequestKind {
+    ABI,
+    All,
+  };
+
+}
+
+/// Evaluate a request for a particular set of members of an iterable
+/// declaration context.
+static ArrayRef<Decl *> evaluateMembersRequest(
+  IterableDeclContext *idc, MembersRequestKind kind) {
   auto dc = cast<DeclContext>(idc->getDecl());
-  auto &Context = dc->getASTContext();
+  auto &ctx = dc->getASTContext();
   SmallVector<Decl *, 8> result;
 
-  // Esnure that we add any synthesized members.
-  if (dc->getParentSourceFile()) {
-    auto nominal = dyn_cast<NominalTypeDecl>(idc);
+  // If there's no parent source file, everything is already in order.
+  if (!dc->getParentSourceFile()) {
+    for (auto *member : idc->getMembers())
+      result.push_back(member);
 
-    if (nominal) {
-      // We need to add implicit initializers because they
-      // affect vtable layout.
-      TypeChecker::addImplicitConstructors(nominal);
+    return ctx.AllocateCopy(result);
+  }
+
+  auto nominal = dyn_cast<NominalTypeDecl>(idc);
+
+  if (nominal) {
+    // We need to add implicit initializers because they
+    // affect vtable layout.
+    TypeChecker::addImplicitConstructors(nominal);
+  }
+
+  // Force any conformances that may introduce more members.
+  for (auto conformance : idc->getLocalConformances()) {
+    auto proto = conformance->getProtocol();
+    bool isDerivable =
+      conformance->getState() == ProtocolConformanceState::Incomplete &&
+      proto->getKnownDerivableProtocolKind();
+
+    switch (kind) {
+    case MembersRequestKind::ABI:
+      // Force any derivable conformances in this context.
+      if (isDerivable)
+        break;
+
+      continue;
+
+    case MembersRequestKind::All:
+      // Force any derivable conformances.
+      if (isDerivable)
+        break;
+
+      // If there are any associated types in the protocol, they might add
+      // type aliases here.
+      if (!proto->getAssociatedTypeMembers().empty())
+        break;
+
+      continue;
     }
 
-    // Force any derivable conformances in this context. This ensures that any
-    // synthesized members will approach in the member list.
-    for (auto conformance : idc->getLocalConformances()) {
-      if (conformance->getState() == ProtocolConformanceState::Incomplete &&
-          conformance->getProtocol()->getKnownDerivableProtocolKind())
-        TypeChecker::checkConformance(conformance->getRootNormalConformance());
-    }
+    TypeChecker::checkConformance(conformance->getRootNormalConformance());
+  }
 
-    // If the type conforms to Encodable or Decodable, even via an extension,
-    // the CodingKeys enum is synthesized as a member of the type itself.
-    // Force it into existence.
-    if (nominal) {
-      (void) evaluateOrDefault(
-        Context.evaluator,
-        ResolveImplicitMemberRequest{nominal,
-                   ImplicitMemberAction::ResolveCodingKeys},
-        {});
-    }
-
-    // If the decl has a @main attribute, we need to force synthesis of the
-    // $main function.
+  // If the type conforms to Encodable or Decodable, even via an extension,
+  // the CodingKeys enum is synthesized as a member of the type itself.
+  // Force it into existence.
+  if (nominal) {
     (void) evaluateOrDefault(
-        Context.evaluator,
-        SynthesizeMainFunctionRequest{const_cast<Decl *>(idc->getDecl())},
-        nullptr);
+      ctx.evaluator,
+      ResolveImplicitMemberRequest{nominal,
+                 ImplicitMemberAction::ResolveCodingKeys},
+      {});
+  }
 
-    for (auto *member : idc->getMembers()) {
-      if (auto *var = dyn_cast<VarDecl>(member)) {
-        // The projected storage wrapper ($foo) might have
-        // dynamically-dispatched accessors, so force them to be synthesized.
-        if (var->hasAttachedPropertyWrapper())
-          (void) var->getPropertyWrapperBackingProperty();
-      }
+  // If the decl has a @main attribute, we need to force synthesis of the
+  // $main function.
+  (void) evaluateOrDefault(
+      ctx.evaluator,
+      SynthesizeMainFunctionRequest{const_cast<Decl *>(idc->getDecl())},
+      nullptr);
+
+  for (auto *member : idc->getMembers()) {
+    if (auto *var = dyn_cast<VarDecl>(member)) {
+      // The projected storage wrapper ($foo) might have
+      // dynamically-dispatched accessors, so force them to be synthesized.
+      if (var->hasAttachedPropertyWrapper())
+        (void) var->getPropertyWrapperBackingProperty();
     }
   }
 
-  SortedFuncList synthesizedMembers;
+  SortedDeclList synthesizedMembers;
 
   for (auto *member : idc->getMembers()) {
-    if (auto *afd = dyn_cast<AbstractFunctionDecl>(member)) {
+    if (auto *vd = dyn_cast<ValueDecl>(member)) {
       // If this is a witness to Actor.enqueue(partialTask:), put it at the
       // beginning of the vtable.
-      if (auto func = dyn_cast<FuncDecl>(afd)) {
+      if (auto func = dyn_cast<FuncDecl>(vd)) {
         if (func->isActorEnqueuePartialTaskWitness()) {
           result.insert(result.begin(), func);
           continue;
@@ -2618,8 +2814,8 @@ SemanticMembersRequest::evaluate(Evaluator &evaluator,
 
       // Add synthesized members to a side table and sort them by their mangled
       // name, since they could have been added to the class in any order.
-      if (afd->isSynthesized()) {
-        synthesizedMembers.add(afd);
+      if (vd->isSynthesized()) {
+        synthesizedMembers.add(vd);
         continue;
       }
     }
@@ -2629,12 +2825,23 @@ SemanticMembersRequest::evaluate(Evaluator &evaluator,
 
   if (!synthesizedMembers.empty()) {
     synthesizedMembers.sort();
-
     for (const auto &pair : synthesizedMembers)
       result.push_back(pair.second);
   }
 
-  return Context.AllocateCopy(result);
+  return ctx.AllocateCopy(result);
+}
+
+ArrayRef<Decl *>
+ABIMembersRequest::evaluate(
+    Evaluator &evaluator, IterableDeclContext *idc) const {
+  return evaluateMembersRequest(idc, MembersRequestKind::ABI);
+}
+
+ArrayRef<Decl *>
+AllMembersRequest::evaluate(
+    Evaluator &evaluator, IterableDeclContext *idc) const {
+  return evaluateMembersRequest(idc, MembersRequestKind::All);
 }
 
 bool TypeChecker::isPassThroughTypealias(TypeAliasDecl *typealias,

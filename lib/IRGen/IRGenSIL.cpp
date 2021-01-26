@@ -3162,6 +3162,10 @@ void IRGenSILFunction::visitStringLiteralInst(swift::StringLiteralInst *i) {
 }
 
 void IRGenSILFunction::visitUnreachableInst(swift::UnreachableInst *i) {
+  if (isAsync()) {
+    emitCoroutineOrAsyncExit();
+    return;
+  }
   Builder.CreateUnreachable();
 }
 
@@ -4351,7 +4355,7 @@ void IRGenSILFunction::visitDebugValueAddrInst(DebugValueAddrInst *i) {
   if (CurSILFn->isAsync() && VarInfo->ArgNo) {
     if (IGM.DebugInfo)
       assert(IGM.DebugInfo->verifyCoroutineArgument(Addr) &&
-             "arg expected to be load from inside %swift.context");
+             "arg expected to be load from inside swift.context");
     Indirection = CoroIndirectValue;
     if (auto *PBI = dyn_cast<ProjectBoxInst>(i->getOperand())) {
       // Usually debug info only ever describes the *result* of a projectBox

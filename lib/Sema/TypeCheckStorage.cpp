@@ -717,10 +717,16 @@ static Expr *buildStorageReference(AccessorDecl *accessor,
       // Adjust the self type of the access to refer to the relevant superclass.
       auto *baseClass = override->getDeclContext()->getSelfClassDecl();
       selfTypeForAccess = selfTypeForAccess->getSuperclassForDecl(baseClass);
-      subs =
-        selfTypeForAccess->getContextSubstitutionMap(
-          accessor->getParentModule(),
-          baseClass);
+
+      // Error recovery path. We get an ErrorType here if getSuperclassForDecl()
+      // fails (because, for instance, a generic parameter of a generic nominal
+      // type cannot be resolved).
+      if (!selfTypeForAccess->is<ErrorType>()) {
+        subs =
+          selfTypeForAccess->getContextSubstitutionMap(
+            accessor->getParentModule(),
+            baseClass);
+      }
 
       storage = override;
 
@@ -1895,6 +1901,7 @@ static AccessorDecl *createGetterPrototype(AbstractStorageDecl *storage,
       getterParams,
       Type(),
       storage->getDeclContext());
+  getter->setSynthesized();
 
   // If we're stealing the 'self' from a lazy initializer, set it now.
   // Note that we don't re-parent the 'self' declaration to be part of
@@ -1944,6 +1951,7 @@ static AccessorDecl *createSetterPrototype(AbstractStorageDecl *storage,
       genericParams, params,
       Type(),
       storage->getDeclContext());
+  setter->setSynthesized();
 
   if (isMutating)
     setter->setSelfAccessKind(SelfAccessKind::Mutating);
@@ -2054,7 +2062,8 @@ createCoroutineAccessorPrototype(AbstractStorageDecl *storage,
       /*StaticLoc=*/SourceLoc(), StaticSpellingKind::None,
       /*Throws=*/false, /*ThrowsLoc=*/SourceLoc(),
       genericParams, params, retTy, dc);
-  
+  accessor->setSynthesized();
+
   if (isMutating)
     accessor->setSelfAccessKind(SelfAccessKind::Mutating);
   else

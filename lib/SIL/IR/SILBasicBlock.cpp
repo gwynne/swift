@@ -31,17 +31,6 @@ using namespace swift;
 // SILBasicBlock Implementation
 //===----------------------------------------------------------------------===//
 
-SILBasicBlock::SILBasicBlock(SILFunction *parent, SILBasicBlock *relativeToBB,
-                             bool after)
-    : Parent(parent), PredList(nullptr) {
-  if (!relativeToBB) {
-    parent->getBlocks().push_back(this);
-  } else if (after) {
-    parent->getBlocks().insertAfter(relativeToBB->getIterator(), this);
-  } else {
-    parent->getBlocks().insert(relativeToBB->getIterator(), this);
-  }
-}
 SILBasicBlock::~SILBasicBlock() {
   if (!getParent()) {
     assert(ArgumentList.empty() &&
@@ -126,7 +115,7 @@ void SILBasicBlock::eraseInstructions() {
 SILBasicBlock::iterator SILBasicBlock::erase(SILInstruction *I) {
   // Notify the delete handlers that this instruction is going away.
   SILModule &module = getModule();
-  module.notifyDeleteHandlers(&*I);
+  module.notifyDeleteHandlers(I->asSILNode());
   auto nextIter = InstList.erase(I);
   module.deallocateInst(I);
   return nextIter;
@@ -134,7 +123,7 @@ SILBasicBlock::iterator SILBasicBlock::erase(SILInstruction *I) {
 
 /// This method unlinks 'self' from the containing SILFunction and deletes it.
 void SILBasicBlock::eraseFromParent() {
-  getParent()->getBlocks().erase(this);
+  getParent()->eraseBlock(this);
 }
 
 void SILBasicBlock::cloneArgumentList(SILBasicBlock *Other) {
@@ -174,12 +163,15 @@ SILBasicBlock::createFunctionArgument(SILType Ty, const ValueDecl *D,
   return new (getModule()) SILFunctionArgument(this, Ty, OwnershipKind, D);
 }
 
-SILFunctionArgument *SILBasicBlock::insertFunctionArgument(arg_iterator Iter,
+SILFunctionArgument *SILBasicBlock::insertFunctionArgument(unsigned AtArgPos,
                                                            SILType Ty,
                                                            ValueOwnershipKind OwnershipKind,
                                                            const ValueDecl *D) {
   assert(isEntry() && "Function Arguments can only be in the entry block");
-  return new (getModule()) SILFunctionArgument(this, Iter, Ty, OwnershipKind, D);
+  auto *arg = new (getModule()) SILFunctionArgument(Ty, OwnershipKind, D);
+  arg->parentBlock = this;
+  insertArgument(ArgumentList.begin() + AtArgPos, arg);
+  return arg;
 }
 
 SILFunctionArgument *SILBasicBlock::replaceFunctionArgument(
@@ -201,7 +193,7 @@ SILFunctionArgument *SILBasicBlock::replaceFunctionArgument(
 
   // TODO: When we switch to malloc/free allocation we'll be leaking memory
   // here.
-  ArgumentList[i] = NewArg;
+  *(ArgumentList.begin() + i) = NewArg;
 
   return NewArg;
 }
@@ -227,7 +219,7 @@ SILPhiArgument *SILBasicBlock::replacePhiArgument(unsigned i, SILType Ty,
 
   // TODO: When we switch to malloc/free allocation we'll be leaking memory
   // here.
-  ArgumentList[i] = NewArg;
+  *(ArgumentList.begin() + i) = NewArg;
 
   return NewArg;
 }
@@ -266,13 +258,16 @@ SILPhiArgument *SILBasicBlock::createPhiArgument(SILType Ty,
   return new (getModule()) SILPhiArgument(this, Ty, Kind, D);
 }
 
-SILPhiArgument *SILBasicBlock::insertPhiArgument(arg_iterator Iter, SILType Ty,
+SILPhiArgument *SILBasicBlock::insertPhiArgument(unsigned AtArgPos, SILType Ty,
                                                  ValueOwnershipKind Kind,
                                                  const ValueDecl *D) {
   assert(!isEntry() && "PHI Arguments can not be in the entry block");
   if (Ty.isTrivial(*getParent()))
     Kind = OwnershipKind::None;
-  return new (getModule()) SILPhiArgument(this, Iter, Ty, Kind, D);
+  auto *arg = new (getModule()) SILPhiArgument(Ty, Kind, D);
+  arg->parentBlock = this;
+  insertArgument(ArgumentList.begin() + AtArgPos, arg);
+  return arg;
 }
 
 void SILBasicBlock::eraseArgument(int Index) {
@@ -289,21 +284,11 @@ void SILBasicBlock::eraseArgument(int Index) {
 /// stay as part of the original basic block. The old basic block is left
 /// without a terminator.
 SILBasicBlock *SILBasicBlock::split(iterator I) {
-  SILBasicBlock *New =
-    new (Parent->getModule()) SILBasicBlock(Parent, this, /*after*/true);
+  SILBasicBlock *New = Parent->createBasicBlockAfter(this);
   // Move all of the specified instructions from the original basic block into
   // the new basic block.
   New->InstList.splice(New->end(), InstList, I, end());
   return New;
-}
-
-/// Move the basic block to after the specified basic block in the IR.
-void SILBasicBlock::moveAfter(SILBasicBlock *After) {
-  assert(getParent() && getParent() == After->getParent() &&
-         "Blocks must be in the same function");
-  auto InsertPt = std::next(SILFunction::iterator(After));
-  auto &BlkList = getParent()->getBlocks();
-  BlkList.splice(InsertPt, BlkList, this);
 }
 
 void SILBasicBlock::moveTo(SILBasicBlock::iterator To, SILInstruction *I) {
@@ -330,6 +315,8 @@ transferNodesFromList(llvm::ilist_traits<SILBasicBlock> &SrcTraits,
   // If splicing blocks not in the same function, update the parent pointers.
   for (; First != Last; ++First) {
     First->Parent = Parent;
+    First->index = -1;
+    First->lastInitializedBitfieldID = 0;
     for (auto &II : *First)
       II.setDebugScope(ScopeCloner.getOrCreateClonedScope(II.getDebugScope()));
   }

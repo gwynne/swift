@@ -1092,11 +1092,32 @@ Fingerprint SourceFile::getInterfaceHash() const {
   assert(hasInterfaceHash() && "Interface hash not enabled");
   auto &eval = getASTContext().evaluator;
   auto *mutableThis = const_cast<SourceFile *>(this);
-  auto md5 = *evaluateOrDefault(eval, ParseSourceFileRequest{mutableThis}, {})
-                  .InterfaceHash;
-  llvm::MD5::MD5Result result;
-  md5.final(result);
-  return Fingerprint{std::move(result)};
+  Optional<StableHasher> interfaceHasher =
+      evaluateOrDefault(eval, ParseSourceFileRequest{mutableThis}, {})
+              .InterfaceHasher;
+  return Fingerprint{StableHasher{interfaceHasher.getValue()}.finalize()};
+}
+
+Fingerprint SourceFile::getInterfaceHashIncludingTypeMembers() const {
+  /// FIXME: Gross. Hashing multiple "hash" values.
+  auto hash = StableHasher::defaultHasher();
+  hash.combine(getInterfaceHash());
+
+  std::function<void(IterableDeclContext *)> hashTypeBodyFingerprints =
+      [&](IterableDeclContext *IDC) {
+        if (auto fp = IDC->getBodyFingerprint())
+          hash.combine(*fp);
+        for (auto *member : IDC->getParsedMembers())
+          if (auto *childIDC = dyn_cast<IterableDeclContext>(member))
+            hashTypeBodyFingerprints(childIDC);
+      };
+
+  for (auto *D : getTopLevelDecls()) {
+    if (auto IDC = dyn_cast<IterableDeclContext>(D))
+      hashTypeBodyFingerprints(IDC);
+  }
+
+  return Fingerprint{std::move(hash)};
 }
 
 syntax::SourceFileSyntax SourceFile::getSyntaxRoot() const {
@@ -1512,6 +1533,20 @@ const clang::Module *ModuleDecl::findUnderlyingClangModule() const {
       return Mod;
   }
   return nullptr;
+}
+
+void ModuleDecl::collectBasicSourceFileInfo(
+    llvm::function_ref<void(const BasicSourceFileInfo &)> callback) {
+  for (FileUnit *fileUnit : getFiles()) {
+    if (SourceFile *SF = dyn_cast<SourceFile>(fileUnit)) {
+      BasicSourceFileInfo info;
+      if (info.populate(SF))
+        continue;
+      callback(info);
+    } else if (auto *serialized = dyn_cast<LoadedFile>(fileUnit)) {
+      serialized->collectBasicSourceFileInfo(callback);
+    }
+  }
 }
 
 //===----------------------------------------------------------------------===//
@@ -2017,6 +2052,30 @@ bool ModuleDecl::isImportedImplementationOnly(const ModuleDecl *module) const {
   return true;
 }
 
+bool ModuleDecl::
+canBeUsedForCrossModuleOptimization(NominalTypeDecl *nominal) const {
+  ModuleDecl *moduleOfNominal = nominal->getParentModule();
+
+  // If the nominal is defined in the same module, it's fine.
+  if (moduleOfNominal == this)
+    return true;
+
+  // See if nominal is imported in a "regular" way, i.e. not with
+  // @_implementationOnly or @_spi.
+  ModuleDecl::ImportFilter filter = {
+    ModuleDecl::ImportFilterKind::Exported,
+    ModuleDecl::ImportFilterKind::Default};
+  SmallVector<ImportedModule, 4> results;
+  getImportedModules(results, filter);
+
+  auto &imports = getASTContext().getImportCache();
+  for (auto &desc : results) {
+    if (imports.isImportedBy(moduleOfNominal, desc.importedModule))
+      return true;
+  }
+  return false;
+}
+
 void SourceFile::lookupImportedSPIGroups(
                         const ModuleDecl *importedModule,
                         llvm::SmallSetVector<Identifier, 4> &spiGroups) const {
@@ -2347,8 +2406,6 @@ bool SourceFile::hasDelayedBodyParsing() const {
 
   // Not supported right now.
   if (Kind == SourceFileKind::SIL)
-    return false;
-  if (hasInterfaceHash())
     return false;
   if (shouldCollectTokens())
     return false;

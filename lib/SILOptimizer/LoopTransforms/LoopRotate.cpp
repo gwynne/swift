@@ -39,6 +39,8 @@ using namespace swift;
 /// loops in the swift benchmarks).
 static llvm::cl::opt<int> LoopRotateSizeLimit("looprotate-size-limit",
                                               llvm::cl::init(20));
+static llvm::cl::opt<bool> RotateSingleBlockLoop("looprotate-single-block-loop",
+                                                 llvm::cl::init(false));
 
 /// Check whether all operands are loop invariant.
 static bool
@@ -131,7 +133,7 @@ static void updateSSAForUseOfValue(
   assert(Res->getType() == MappedValue->getType() && "The types must match");
 
   insertedPhis.clear();
-  updater.initialize(Res->getType());
+  updater.initialize(Res->getType(), Res.getOwnershipKind());
   updater.addAvailableValue(Header, Res);
   updater.addAvailableValue(EntryCheckBlock, MappedValue);
 
@@ -228,9 +230,9 @@ static bool rotateLoopAtMostUpToLatch(SILLoop *loop, DominanceInfo *domInfo,
     return false;
   }
 
-  bool didRotate =
-      rotateLoop(loop, domInfo, loopInfo, false /* rotateSingleBlockLoops */,
-                 latch, ShouldVerify);
+  bool didRotate = rotateLoop(
+      loop, domInfo, loopInfo,
+      RotateSingleBlockLoop /* rotateSingleBlockLoops */, latch, ShouldVerify);
 
   // Keep rotating at most until we hit the original latch.
   if (didRotate)
@@ -406,7 +408,7 @@ bool swift::rotateLoop(SILLoop *loop, DominanceInfo *domInfo,
 
   // Beautify the IR. Move the old header to after the old latch as it is now
   // the latch.
-  header->moveAfter(latch);
+  header->getParent()->moveBlockAfter(header, latch);
 
   // Merge the old latch with the old header if possible.
   if (mergeBasicBlockWithSuccessor(latch, domInfo, loopInfo))
@@ -440,9 +442,6 @@ class LoopRotation : public SILFunctionTransform {
 
     SILFunction *f = getFunction();
     assert(f);
-    // FIXME: Add ownership support.
-    if (f->hasOwnership())
-      return;
 
     SILLoopInfo *loopInfo = loopAnalysis->get(f);
     assert(loopInfo);

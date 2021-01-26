@@ -333,7 +333,7 @@ protected:
     NumElements : 32
   );
 
-  SWIFT_INLINE_BITFIELD(ValueDecl, Decl, 1+1+1,
+  SWIFT_INLINE_BITFIELD(ValueDecl, Decl, 1+1+1+1,
     AlreadyInLookupTable : 1,
 
     /// Whether we have already checked whether this declaration is a 
@@ -342,7 +342,11 @@ protected:
 
     /// Whether the decl can be accessed by swift users; for instance,
     /// a.storage for lazy var a is a decl that cannot be accessed.
-    IsUserAccessible : 1
+    IsUserAccessible : 1,
+
+    /// Whether this member was synthesized as part of a derived
+    /// protocol conformance.
+    Synthesized : 1
   );
 
   SWIFT_INLINE_BITFIELD(AbstractStorageDecl, ValueDecl, 1,
@@ -387,7 +391,7 @@ protected:
   SWIFT_INLINE_BITFIELD(SubscriptDecl, VarDecl, 2,
     StaticSpelling : 2
   );
-  SWIFT_INLINE_BITFIELD(AbstractFunctionDecl, ValueDecl, 3+8+1+1+1+1+1+1+1,
+  SWIFT_INLINE_BITFIELD(AbstractFunctionDecl, ValueDecl, 3+8+1+1+1+1+1+1,
     /// \see AbstractFunctionDecl::BodyKind
     BodyKind : 3,
 
@@ -405,10 +409,6 @@ protected:
 
     /// Whether the function body throws.
     Throws : 1,
-
-    /// Whether this member was synthesized as part of a derived
-    /// protocol conformance.
-    Synthesized : 1,
 
     /// Whether this member's body consists of a single expression.
     HasSingleExpressionBody : 1,
@@ -2020,6 +2020,7 @@ protected:
     Bits.ValueDecl.AlreadyInLookupTable = false;
     Bits.ValueDecl.CheckedRedeclaration = false;
     Bits.ValueDecl.IsUserAccessible = true;
+    Bits.ValueDecl.Synthesized = false;
   }
 
   // MemberLookupTable borrows a bit from this type
@@ -2055,6 +2056,14 @@ public:
 
   bool isUserAccessible() const {
     return Bits.ValueDecl.IsUserAccessible;
+  }
+
+  bool isSynthesized() const {
+    return Bits.ValueDecl.Synthesized;
+  }
+
+  void setSynthesized(bool value = true) {
+    Bits.ValueDecl.Synthesized = value;
   }
 
   bool hasName() const { return bool(Name); }
@@ -3532,7 +3541,7 @@ class ClassDecl final : public NominalTypeDecl {
 
   friend class SuperclassDeclRequest;
   friend class SuperclassTypeRequest;
-  friend class SemanticMembersRequest;
+  friend class ABIMembersRequest;
   friend class HasMissingDesignatedInitializersRequest;
   friend class InheritsSuperclassInitializersRequest;
 
@@ -3870,6 +3879,66 @@ enum class KnownDerivableProtocolKind : uint8_t {
   Actor,
 };
 
+class ProtocolRethrowsRequirementList {
+public:
+  typedef std::pair<Type, ValueDecl *> Entry;
+
+private:
+  ArrayRef<Entry> entries;
+
+public:
+  ProtocolRethrowsRequirementList(ArrayRef<Entry> entries) : entries(entries) {}
+  ProtocolRethrowsRequirementList() : entries() {}
+
+  typedef const Entry *const_iterator;
+  typedef const_iterator iterator;
+
+  const_iterator begin() const { return entries.begin(); }
+  const_iterator end() const { return entries.end(); }
+
+  size_t size() const { return entries.size(); }
+
+  void print(raw_ostream &OS) const;
+
+  SWIFT_DEBUG_DUMP;
+
+  friend bool operator==(const ProtocolRethrowsRequirementList &lhs,
+                         const ProtocolRethrowsRequirementList &rhs) {
+    if (lhs.size() != rhs.size()) {
+      return false;
+    }
+    auto lhsIter = lhs.begin();
+    auto rhsIter = rhs.begin();
+    while (lhsIter != lhs.end() && rhsIter != rhs.end()) {
+      if (lhsIter->first->isEqual(rhsIter->first)) {
+        return false;
+      }
+      if (lhsIter->second != rhsIter->second) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  friend bool operator!=(const ProtocolRethrowsRequirementList &lhs,
+                         const ProtocolRethrowsRequirementList &rhs) {
+    return !(lhs == rhs);
+  }
+
+  friend llvm::hash_code hash_value(
+    const ProtocolRethrowsRequirementList &list) {
+    return llvm::hash_combine(list.size()); // it is good enought for
+    // llvm::hash_code hash;
+    // for (auto entry : list) {
+    //   hash = llvm::hash_combine(hash, entry.first->getCanonicalType());
+    //   hash = llvm::hash_combine(hash, entry.second);
+    // }
+    // return hash;
+  }
+};
+
+void simple_display(raw_ostream &out, const ProtocolRethrowsRequirementList reqs);
+
 /// ProtocolDecl - A declaration of a protocol, for example:
 ///
 ///   protocol Drawable {
@@ -4050,6 +4119,9 @@ public:
   /// all the members do not contain any associated types, and do not
   /// contain 'Self' in 'parameter' or 'other' position.
   bool existentialTypeSupported() const;
+
+  ProtocolRethrowsRequirementList getRethrowingRequirements() const;
+  bool isRethrowingProtocol() const;
 
 private:
   void computeKnownProtocolKind() const;
@@ -5460,6 +5532,23 @@ public:
   }
 };
 
+enum class FunctionRethrowingKind : uint8_t {
+  /// The function is not throwing
+  None,
+
+  /// The function rethrows by closure
+  ByClosure, 
+
+  /// The function rethrows by conformance
+  ByConformance, 
+
+  /// The function throws
+  Throws, 
+
+  /// The function throwing determinate is invalid
+  Invalid
+};
+
 /// Base class for function-like declarations.
 class AbstractFunctionDecl : public GenericContext, public ValueDecl {
   friend class NeedsNewVTableEntryRequest;
@@ -5577,7 +5666,6 @@ protected:
     Bits.AbstractFunctionDecl.Overridden = false;
     Bits.AbstractFunctionDecl.Async = Async;
     Bits.AbstractFunctionDecl.Throws = Throws;
-    Bits.AbstractFunctionDecl.Synthesized = false;
     Bits.AbstractFunctionDecl.HasSingleExpressionBody = false;
     Bits.AbstractFunctionDecl.HasNestedTypeDeclarations = false;
   }
@@ -5662,6 +5750,8 @@ public:
 
   /// Returns true if the function body throws.
   bool hasThrows() const { return Bits.AbstractFunctionDecl.Throws; }
+
+  FunctionRethrowingKind getRethrowingKind() const;
 
   // FIXME: Hack that provides names with keyword arguments for accessors.
   DeclName getEffectiveFullName() const;
@@ -5783,14 +5873,6 @@ public:
   /// For a method of a class, checks whether it will require a new entry in the
   /// vtable.
   bool needsNewVTableEntry() const;
-
-  bool isSynthesized() const {
-    return Bits.AbstractFunctionDecl.Synthesized;
-  }
-
-  void setSynthesized(bool value = true) {
-    Bits.AbstractFunctionDecl.Synthesized = value;
-  }
 
 public:
   /// Retrieve the source range of the function body.

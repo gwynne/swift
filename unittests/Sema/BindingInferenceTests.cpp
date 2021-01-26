@@ -19,6 +19,7 @@
 using namespace swift;
 using namespace swift::unittest;
 using namespace swift::constraints;
+using namespace swift::constraints::inference;
 
 TEST_F(SemaTest, TestIntLiteralBindingInference) {
   ConstraintSystemOptions options;
@@ -124,11 +125,10 @@ TEST_F(SemaTest, TestIntLiteralBindingInference) {
     ASSERT_EQ(bindings.Bindings.size(), (unsigned)0);
     ASSERT_EQ(bindings.Literals.size(), (unsigned)0);
 
-    llvm::SmallDenseMap<TypeVariableType *, ConstraintSystem::PotentialBindings>
-        env;
+    llvm::SmallDenseMap<TypeVariableType *, PotentialBindings> env;
     env.insert({floatLiteralTy, cs.inferBindingsFor(floatLiteralTy)});
 
-    bindings.finalize(cs, env);
+    bindings.finalize(env);
 
     // Inferred a single transitive binding through `$T_float`.
     ASSERT_EQ(bindings.Bindings.size(), (unsigned)1);

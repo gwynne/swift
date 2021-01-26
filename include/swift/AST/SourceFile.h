@@ -105,9 +105,10 @@ private:
   SourceLoc MainDeclDiagLoc;
 
   /// A hash of all interface-contributing tokens that have been lexed for
-  /// this source file so far.
+  /// this source file.
+  ///
   /// We only collect interface hash for primary input files.
-  llvm::Optional<llvm::MD5> InterfaceHash;
+  llvm::Optional<StableHasher> InterfaceHasher;
 
   /// The ID for the memory buffer containing this file's source.
   ///
@@ -530,6 +531,9 @@ public:
   void dumpInterfaceHash(llvm::raw_ostream &out) {
     out << getInterfaceHash() << '\n';
   }
+
+  /// Get this file's interface hash including the type members in the file.
+  Fingerprint getInterfaceHashIncludingTypeMembers() const;
 
   /// If this source file has been told to collect its parsed tokens, retrieve
   /// those tokens.

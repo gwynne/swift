@@ -425,10 +425,11 @@ void decodeRequirement(
 }
 
 #define MAKE_NODE_TYPE_ERROR(Node, Fmt, ...)                                   \
-  TypeLookupError("TypeDecoder.h:%d: Node kind %u \"%.*s\" - " Fmt, __LINE__,  \
-                  Node->getKind(),                                             \
-                  Node->hasText() ? (int)Node->getText().size() : 0,           \
-                  Node->hasText() ? Node->getText().data() : "", __VA_ARGS__)
+  TYPE_LOOKUP_ERROR_FMT("TypeDecoder.h:%u: Node kind %u \"%.*s\" - " Fmt,      \
+                        __LINE__, (unsigned)Node->getKind(),                   \
+                        Node->hasText() ? (int)Node->getText().size() : 0,     \
+                        Node->hasText() ? Node->getText().data() : "",         \
+                        __VA_ARGS__)
 
 #define MAKE_NODE_TYPE_ERROR0(Node, Str) MAKE_NODE_TYPE_ERROR(Node, "%s", Str)
 
@@ -504,7 +505,7 @@ public:
     case NodeKind::BoundGenericOtherNominalType: {
       if (Node->getNumChildren() < 2)
         return MAKE_NODE_TYPE_ERROR(Node,
-                                    "fewer children (%u) than required (2)",
+                                    "fewer children (%zu) than required (2)",
                                     Node->getNumChildren());
 
       llvm::SmallVector<BuiltType, 8> args;
@@ -567,13 +568,13 @@ public:
       // so that the parent type becomes 'S' and not 'P'.
       if (Node->getNumChildren() < 2)
         return MAKE_NODE_TYPE_ERROR(Node,
-                                    "fewer children (%u) than required (2)",
+                                    "fewer children (%zu) than required (2)",
                                     Node->getNumChildren());
 
       const auto &genericArgs = Node->getChild(1);
       if (genericArgs->getNumChildren() != 1)
         return MAKE_NODE_TYPE_ERROR(genericArgs,
-                                    "expected 1 generic argument, saw %u",
+                                    "expected 1 generic argument, saw %zu",
                                     genericArgs->getNumChildren());
 
       return decodeMangledType(genericArgs->getChild(0));
@@ -648,7 +649,7 @@ public:
       if (Node->getKind() == NodeKind::ProtocolListWithClass) {
         if (Node->getNumChildren() < 2)
           return MAKE_NODE_TYPE_ERROR(Node,
-                                      "fewer children (%u) than required (2)",
+                                      "fewer children (%zu) than required (2)",
                                       Node->getNumChildren());
 
         auto superclassNode = Node->getChild(1);
@@ -677,7 +678,7 @@ public:
     }
     case NodeKind::DynamicSelf: {
       if (Node->getNumChildren() != 1)
-        return MAKE_NODE_TYPE_ERROR(Node, "expected 1 child, saw %u",
+        return MAKE_NODE_TYPE_ERROR(Node, "expected 1 child, saw %zu",
                                     Node->getNumChildren());
 
       auto selfType = decodeMangledType(Node->getChild(0));
@@ -705,7 +706,7 @@ public:
     case NodeKind::FunctionType: {
       if (Node->getNumChildren() < 2)
         return MAKE_NODE_TYPE_ERROR(Node,
-                                    "fewer children (%u) than required (2)",
+                                    "fewer children (%zu) than required (2)",
                                     Node->getNumChildren());
 
       FunctionTypeFlags flags;
@@ -753,7 +754,7 @@ public:
 
       if (Node->getNumChildren() < firstChildIdx + 2)
         return MAKE_NODE_TYPE_ERROR(Node,
-                                    "fewer children (%u) than required (%u)",
+                                    "fewer children (%zu) than required (%u)",
                                     Node->getNumChildren(), firstChildIdx + 2);
 
       bool hasParamFlags = false;
@@ -926,7 +927,7 @@ public:
       if (Node->getChild(0)->getKind() == NodeKind::TupleElementName) {
         if (Node->getNumChildren() < 2)
           return MAKE_NODE_TYPE_ERROR(Node,
-                                      "fewer children (%u) than required (2)",
+                                      "fewer children (%zu) than required (2)",
                                       Node->getNumChildren());
 
         return decodeMangledType(Node->getChild(1));
@@ -936,7 +937,7 @@ public:
     case NodeKind::DependentGenericType: {
       if (Node->getNumChildren() < 2)
         return MAKE_NODE_TYPE_ERROR(Node,
-                                    "fewer children (%u) than required (2)",
+                                    "fewer children (%zu) than required (2)",
                                     Node->getNumChildren());
 
       return decodeMangledType(Node->getChild(1));
@@ -944,7 +945,7 @@ public:
     case NodeKind::DependentMemberType: {
       if (Node->getNumChildren() < 2)
         return MAKE_NODE_TYPE_ERROR(Node,
-                                    "fewer children (%u) than required (2)",
+                                    "fewer children (%zu) than required (2)",
                                     Node->getNumChildren());
 
       auto base = decodeMangledType(Node->getChild(0));
@@ -964,7 +965,7 @@ public:
     case NodeKind::DependentAssociatedTypeRef: {
       if (Node->getNumChildren() < 2)
         return MAKE_NODE_TYPE_ERROR(Node,
-                                    "fewer children (%u) than required (2)",
+                                    "fewer children (%zu) than required (2)",
                                     Node->getNumChildren());
 
       return decodeMangledType(Node->getChild(1));
@@ -1112,7 +1113,7 @@ public:
     case NodeKind::SugaredDictionary: {
       if (Node->getNumChildren() < 2)
         return MAKE_NODE_TYPE_ERROR(Node,
-                                    "fewer children (%u) than required (2)",
+                                    "fewer children (%zu) than required (2)",
                                     Node->getNumChildren());
 
       auto key = decodeMangledType(Node->getChild(0));
@@ -1138,7 +1139,7 @@ public:
     case NodeKind::OpaqueType: {
       if (Node->getNumChildren() < 3)
         return MAKE_NODE_TYPE_ERROR(Node,
-                                    "fewer children (%u) than required (3)",
+                                    "fewer children (%zu) than required (3)",
                                     Node->getNumChildren());
       auto descriptor = Node->getChild(0);
       auto ordinalNode = Node->getChild(1);
@@ -1256,7 +1257,7 @@ private:
     } else {
       if (node->getNumChildren() < 2)
         return MAKE_NODE_TYPE_ERROR(
-            node, "Number of node children (%u) less than required (2)",
+            node, "Number of node children (%zu) less than required (2)",
             node->getNumChildren());
 
       auto parentContext = node->getChild(0);
@@ -1274,7 +1275,7 @@ private:
         // Decode the type being extended.
         if (parentContext->getNumChildren() < 2)
           return MAKE_NODE_TYPE_ERROR(parentContext,
-                                      "Number of parentContext children (%u) "
+                                      "Number of parentContext children (%zu) "
                                       "less than required (2)",
                                       node->getNumChildren());
         parentContext = parentContext->getChild(1);

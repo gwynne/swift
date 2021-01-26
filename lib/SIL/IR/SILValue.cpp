@@ -81,6 +81,14 @@ SILInstruction *ValueBase::getDefiningInsertionPoint() {
   return nullptr;
 }
 
+SILInstruction *ValueBase::getNextInstruction() {
+  if (auto *inst = getDefiningInstruction())
+    return &*std::next(inst->getIterator());
+  if (auto *arg = dyn_cast<SILArgument>(this))
+    return &*arg->getParentBlock()->begin();
+  return nullptr;
+}
+
 Optional<ValueBase::DefiningInstructionResult>
 ValueBase::getDefiningInstructionResult() {
   if (auto *inst = dyn_cast<SingleValueInstruction>(this))
@@ -91,50 +99,26 @@ ValueBase::getDefiningInstructionResult() {
 }
 
 SILBasicBlock *SILNode::getParentBlock() const {
-  auto *CanonicalNode =
-      const_cast<SILNode *>(this)->getRepresentativeSILNodeInObject();
-  if (auto *Inst = dyn_cast<SILInstruction>(CanonicalNode))
+  if (auto *Inst = dyn_cast<SILInstruction>(this))
     return Inst->getParent();
-  if (auto *Arg = dyn_cast<SILArgument>(CanonicalNode))
+  if (auto *Arg = dyn_cast<SILArgument>(this))
     return Arg->getParent();
+  if (auto *MVR = dyn_cast<MultipleValueInstructionResult>(this)) {
+    return MVR->getParent()->getParent();
+  }
   return nullptr;
 }
 
 SILFunction *SILNode::getFunction() const {
-  auto *CanonicalNode =
-      const_cast<SILNode *>(this)->getRepresentativeSILNodeInObject();
-  if (auto *Inst = dyn_cast<SILInstruction>(CanonicalNode))
-    return Inst->getFunction();
-  if (auto *Arg = dyn_cast<SILArgument>(CanonicalNode))
-    return Arg->getFunction();
+  if (auto *parentBlock = getParentBlock())
+    return parentBlock->getParent();
   return nullptr;
 }
 
 SILModule *SILNode::getModule() const {
-  auto *CanonicalNode =
-      const_cast<SILNode *>(this)->getRepresentativeSILNodeInObject();
-  if (auto *Inst = dyn_cast<SILInstruction>(CanonicalNode))
-    return &Inst->getModule();
-  if (auto *Arg = dyn_cast<SILArgument>(CanonicalNode))
-    return &Arg->getModule();
+  if (SILFunction *func = getFunction())
+    return &func->getModule();
   return nullptr;
-}
-
-const SILNode *SILNode::getRepresentativeSILNodeSlowPath() const {
-  assert(getStorageLoc() != SILNodeStorageLocation::Instruction);
-
-  if (isa<SingleValueInstruction>(this)) {
-    assert(hasMultipleSILNodeBases(getKind()));
-    return &static_cast<const SILInstruction &>(
-        static_cast<const SingleValueInstruction &>(
-            static_cast<const ValueBase &>(*this)));
-  }
-
-  if (auto *MVR = dyn_cast<MultipleValueInstructionResult>(this)) {
-    return MVR->getParent();
-  }
-
-  llvm_unreachable("Invalid value for slow path");
 }
 
 /// Get a location for this value.
@@ -317,28 +301,6 @@ SILBasicBlock *Operand::getParentBlock() const {
 SILFunction *Operand::getParentFunction() const {
   auto *self = const_cast<Operand *>(this);
   return self->getUser()->getFunction();
-}
-
-/// Return true if this use can accept Unowned values.
-static bool canAcceptUnownedValue(OperandOwnership operandOwnership) {
-  switch (operandOwnership) {
-  case OperandOwnership::NonUse:
-  case OperandOwnership::UnownedInstantaneousUse:
-  case OperandOwnership::ForwardingUnowned:
-  case OperandOwnership::PointerEscape:
-  case OperandOwnership::BitwiseEscape:
-    return true;
-  case OperandOwnership::TrivialUse:
-  case OperandOwnership::InstantaneousUse:
-  case OperandOwnership::Borrow:
-  case OperandOwnership::DestroyingConsume:
-  case OperandOwnership::ForwardingConsume:
-  case OperandOwnership::InteriorPointer:
-  case OperandOwnership::ForwardingBorrow:
-  case OperandOwnership::EndBorrow:
-  case OperandOwnership::Reborrow:
-    return false;
-  }
 }
 
 bool Operand::canAcceptKind(ValueOwnershipKind kind) const {

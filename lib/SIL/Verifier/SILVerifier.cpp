@@ -1133,10 +1133,22 @@ public:
                         UseLifetimeConstraint::NonLifetimeEnding,
                 "In non-ossa all non-type dependent operands must have a "
                 "constraint of Any, NonLifetimeEnding");
+      } else {
+        // Perform some structural checks on the operand if we have ownership.
+
+        // Make sure that our operand constraint isn't Unowned. There do not
+        // exist in SIL today any instructions that require an Unowned
+        // value. This is because we want to always allow for guaranteed and
+        // owned values to be passed as values to operands that take unowned.
+        auto constraint = operand.getOwnershipConstraint();
+        require(constraint.getPreferredKind() != OwnershipKind::Unowned,
+                "Operand constraint should never have an unowned preferred "
+                "kind since guaranteed and owned values can always be passed "
+                "in unowned positions");
       }
     }
 
-    if (isa<OwnershipForwardingInst>(I)) {
+    if (OwnershipForwardingMixin::isa(I)) {
       checkOwnershipForwardingInst(I);
     }
   }
@@ -5516,7 +5528,7 @@ public:
     }
 
     // Otherwise, verify the body of the function.
-    verifyEntryBlock(&*F->getBlocks().begin());
+    verifyEntryBlock(F->getEntryBlock());
     verifyEpilogBlocks(F);
     verifyFlowSensitiveRules(F);
     verifyBranches(F);
@@ -5548,11 +5560,21 @@ public:
 //===----------------------------------------------------------------------===//
 
 static bool verificationEnabled(const SILModule &M) {
-#ifdef NDEBUG
-  if (!M.getOptions().VerifyAll)
+  // If we are asked to never verify, return false early.
+  if (M.getOptions().VerifyNone)
     return false;
+
+  // Otherwise, if verify all is set, we always verify.
+  if (M.getOptions().VerifyAll)
+    return true;
+
+#ifndef NDEBUG
+  // Otherwise if we do have asserts enabled, always verify...
+  return true;
+#else
+  // And if we don't never verify.
+  return false;
 #endif
-  return !M.getOptions().VerifyNone;
 }
 
 /// verify - Run the SIL verifier to make sure that the SILFunction follows
